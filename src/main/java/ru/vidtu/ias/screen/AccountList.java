@@ -36,10 +36,13 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.WeakHashMap;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
+import ru.vidtu.ias.utils.exceptions.FriendlyException;
 
 //? if >= 1.21.10 {
 import net.minecraft.world.entity.player.PlayerSkin;
@@ -52,6 +55,11 @@ import net.minecraft.world.entity.player.PlayerSkin;
  * @author VidTu
  */
 final class AccountList extends ObjectSelectionList<AccountEntry> {
+    /**
+     * Global timeout for account login tasks.
+     */
+    private static final long LOGIN_TIMEOUT_SECONDS = 90L;
+
     /**
      * Skins cache.
      */
@@ -158,14 +166,32 @@ final class AccountList extends ObjectSelectionList<AccountEntry> {
             // Start login on a dedicated async worker instead of IAS executor.
             // IAS executor is single-threaded and can be blocked by previous long-running tasks.
             String accountName = account.name();
+            AtomicBoolean completed = new AtomicBoolean(false);
             CompletableFuture.runAsync(() -> {
                 LOGGER.info("IAS: Started login task for account {} on thread {}.", accountName, Thread.currentThread().getName());
                 try {
                     account.login(login);
                 } catch (Throwable t) {
-                    LOGGER.error("IAS: Login task for account {} crashed before completion.", accountName, t);
-                    login.error(t);
+                    if (completed.compareAndSet(false, true)) {
+                        LOGGER.error("IAS: Login task for account {} crashed before completion.", accountName, t);
+                        login.error(t);
+                    }
+                    return;
                 }
+                completed.compareAndSet(false, true);
+            }).orTimeout(LOGIN_TIMEOUT_SECONDS, TimeUnit.SECONDS).exceptionally(t -> {
+                Throwable cause = t instanceof CompletionException completion && completion.getCause() != null ? completion.getCause() : t;
+                if (cause instanceof TimeoutException && completed.compareAndSet(false, true)) {
+                    LOGGER.warn("IAS: Login task for account {} timed out after {}s.", accountName, LOGIN_TIMEOUT_SECONDS, cause);
+                    login.error(new FriendlyException("Login timed out.", cause, "ias.error.connect"));
+                    return null;
+                }
+
+                if (completed.compareAndSet(false, true)) {
+                    LOGGER.error("IAS: Login task for account {} failed unexpectedly.", accountName, cause);
+                    login.error(cause);
+                }
+                return null;
             });
 
             // Don't process further.

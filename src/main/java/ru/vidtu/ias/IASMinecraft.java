@@ -64,6 +64,9 @@ import java.nio.channels.UnresolvedAddressException;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 /**
@@ -72,6 +75,11 @@ import java.util.function.Consumer;
  * @author VidTu
  */
 public final class IASMinecraft {
+    /**
+     * Timeout for account switching worker.
+     */
+    private static final long ACCOUNT_SWITCH_TIMEOUT_SECONDS = 120L;
+
     /**
      * Toast for nick warning.
      */
@@ -391,12 +399,18 @@ public final class IASMinecraft {
                 long totalMillis = (System.nanoTime() - start) / 1_000_000L;
                 LOGGER.debug("IAS: Completed account switch worker for {} in {}ms.", data.name(), totalMillis);
             });
-        }).exceptionally(t -> {
+        }).orTimeout(ACCOUNT_SWITCH_TIMEOUT_SECONDS, TimeUnit.SECONDS).exceptionally(t -> {
+            Throwable cause = t instanceof CompletionException completion && completion.getCause() != null ? completion.getCause() : t;
+            if (cause instanceof TimeoutException) {
+                LOGGER.error("IAS: Account switch timed out for {} after {}s.", data.name(), ACCOUNT_SWITCH_TIMEOUT_SECONDS, cause);
+                throw new FriendlyException("Account switch timed out.", cause, "ias.error.connect");
+            }
+
             // Log it.
-            LOGGER.error("IAS: Unable to log in: {}.", data, t);
+            LOGGER.error("IAS: Unable to log in: {}.", data, cause);
 
             // Rethrow.
-            throw new RuntimeException("Unable to change account to: " + data, t);
+            throw new RuntimeException("Unable to change account to: " + data, cause);
         });
     }
 }
