@@ -155,12 +155,10 @@ final class AccountList extends ObjectSelectionList<AccountEntry> {
             LoginPopupScreen login = new LoginPopupScreen(this.screen);
             this.minecraft.setScreen(login);
 
-            // Start login.
-            AtomicBoolean started = new AtomicBoolean(false);
+            // Start login on a dedicated async worker instead of IAS executor.
+            // IAS executor is single-threaded and can be blocked by previous long-running tasks.
             String accountName = account.name();
-            LOGGER.info("IAS: Queuing login task for account {} on IAS executor.", accountName);
-            IAS.executor().execute(() -> {
-                started.set(true);
+            CompletableFuture.runAsync(() -> {
                 LOGGER.info("IAS: Started login task for account {} on thread {}.", accountName, Thread.currentThread().getName());
                 try {
                     account.login(login);
@@ -169,12 +167,6 @@ final class AccountList extends ObjectSelectionList<AccountEntry> {
                     login.error(t);
                 }
             });
-
-            // Warn if login task does not start in time, probable IAS executor stall.
-            CompletableFuture.runAsync(() -> {
-                if (started.get()) return;
-                LOGGER.warn("IAS: Login task for account {} did not start within 20s. IAS executor may be blocked (possible stuck request after sleep/network disconnect).", accountName);
-            }, CompletableFuture.delayedExecutor(20L, TimeUnit.SECONDS));
 
             // Don't process further.
             return;
