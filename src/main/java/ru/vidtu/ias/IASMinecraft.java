@@ -36,6 +36,7 @@ import net.minecraft.client.gui.components.toasts.SystemToast;
 import net.minecraft.client.gui.components.toasts.ToastManager;
 import net.minecraft.client.gui.layouts.LayoutElement;
 import net.minecraft.client.gui.screens.ConnectScreen;
+import net.minecraft.client.gui.screens.DisconnectedScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
@@ -51,6 +52,7 @@ import org.slf4j.LoggerFactory;
 import ru.vidtu.ias.auth.LoginData;
 import ru.vidtu.ias.config.IASConfig;
 import ru.vidtu.ias.mixins.MinecraftAccessor;
+import ru.vidtu.ias.mixins.DisconnectedScreenAccessor;
 import ru.vidtu.ias.platform.IStonecutter;
 import ru.vidtu.ias.screen.AccountScreen;
 import ru.vidtu.ias.utils.Expression;
@@ -140,6 +142,15 @@ public final class IASMinecraft {
      */
     @SuppressWarnings({"ChainOfInstanceofChecks", "ConstantValue"}) // <- Abstraction for Minecraft is not possible, mods break user non-nullness.
     public static void onInit(Minecraft minecraft, Screen screen, Consumer<Button> buttonAdder) {
+        if (screen instanceof DisconnectedScreen disconnected) {
+            try {
+                DisconnectedScreenAccessor accessor = (DisconnectedScreenAccessor) disconnected;
+                AutoRefreshManager.tryRefreshExpiredToken(minecraft, accessor.ias$parent(), accessor.ias$details().reason());
+            } catch (Throwable t) {
+                LOGGER.debug("IAS: Unable to inspect disconnect reason for auto-refresh.", t);
+            }
+        }
+
         // Add title button.
         if (IASConfig.titleButton && screen instanceof TitleScreen) {
             // Calculate the position.
