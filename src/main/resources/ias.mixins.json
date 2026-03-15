@@ -5,6 +5,8 @@
   "package": "ru.vidtu.ias.mixins",
   "client": [
     //? if >=1.21.10
+    "ConnectScreenMixin",
+    "DisconnectedScreenAccessor",
     "JoinMultiplayerScreenMixin",
     "MinecraftAccessor",
     "MinecraftMixin"

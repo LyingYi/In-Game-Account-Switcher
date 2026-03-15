@@ -36,6 +36,7 @@ import net.minecraft.client.gui.components.toasts.SystemToast;
 import net.minecraft.client.gui.components.toasts.ToastManager;
 import net.minecraft.client.gui.layouts.LayoutElement;
 import net.minecraft.client.gui.screens.ConnectScreen;
+import net.minecraft.client.gui.screens.DisconnectedScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
@@ -51,15 +52,23 @@ import org.slf4j.LoggerFactory;
 import ru.vidtu.ias.auth.LoginData;
 import ru.vidtu.ias.config.IASConfig;
 import ru.vidtu.ias.mixins.MinecraftAccessor;
+import ru.vidtu.ias.mixins.DisconnectedScreenAccessor;
 import ru.vidtu.ias.platform.IStonecutter;
 import ru.vidtu.ias.screen.AccountScreen;
 import ru.vidtu.ias.utils.Expression;
 import ru.vidtu.ias.utils.IUtils;
 import ru.vidtu.ias.utils.exceptions.FriendlyException;
 
+import java.net.SocketException;
+import java.net.http.HttpTimeoutException;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.UnresolvedAddressException;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 /**
@@ -68,6 +77,11 @@ import java.util.function.Consumer;
  * @author VidTu
  */
 public final class IASMinecraft {
+    /**
+     * Timeout for account switching worker.
+     */
+    private static final long ACCOUNT_SWITCH_TIMEOUT_SECONDS = 120L;
+
     /**
      * Toast for nick warning.
      */
@@ -128,6 +142,15 @@ public final class IASMinecraft {
      */
     @SuppressWarnings({"ChainOfInstanceofChecks", "ConstantValue"}) // <- Abstraction for Minecraft is not possible, mods break user non-nullness.
     public static void onInit(Minecraft minecraft, Screen screen, Consumer<Button> buttonAdder) {
+        if (screen instanceof DisconnectedScreen disconnected) {
+            try {
+                DisconnectedScreenAccessor accessor = (DisconnectedScreenAccessor) disconnected;
+                AutoRefreshManager.tryRefreshExpiredToken(minecraft, accessor.ias$parent(), accessor.ias$details().reason());
+            } catch (Throwable t) {
+                LOGGER.debug("IAS: Unable to inspect disconnect reason for auto-refresh.", t);
+            }
+        }
+
         // Add title button.
         if (IASConfig.titleButton && screen instanceof TitleScreen) {
             // Calculate the position.
@@ -303,6 +326,9 @@ public final class IASMinecraft {
 
         // Create everything async, because it lags.
         return CompletableFuture.runAsync(() -> {
+            long start = System.nanoTime();
+            LOGGER.debug("IAS: Starting account switch worker for {} on thread {}.", data.name(), Thread.currentThread().getName());
+
             // Create the user.
             LOGGER.info("IAS: Creating user...");
             // I have no idea what are the OPTIONAL fields and the game
@@ -320,7 +346,22 @@ public final class IASMinecraft {
             //? if >=1.21.10 {
             YggdrasilAuthenticationService service = online ? new YggdrasilAuthenticationService(minecraft.getProxy()) : YggdrasilAuthenticationService.createOffline(minecraft.getProxy());
             Services services = Services.create(service, minecraft.gameDirectory);
-            CompletableFuture<ProfileResult> profile = CompletableFuture.completedFuture(online ? services.sessionService().fetchProfile(data.uuid(), true) : null);
+            ProfileResult profileResult = null;
+            if (online) {
+                long profileStart = System.nanoTime();
+                LOGGER.debug("IAS: Fetching profile for {}...", data.uuid());
+                try {
+                    profileResult = services.sessionService().fetchProfile(data.uuid(), true);
+                    long profileMillis = (System.nanoTime() - profileStart) / 1_000_000L;
+                    LOGGER.debug("IAS: Fetched profile for {} in {}ms.", data.uuid(), profileMillis);
+                } catch (Throwable t) {
+                    if (IUtils.anyInCausalChain(t, err -> err instanceof UnresolvedAddressException || err instanceof HttpTimeoutException || err instanceof java.net.ConnectException || err instanceof java.net.NoRouteToHostException || err instanceof SocketException || err instanceof ClosedChannelException)) {
+                        LOGGER.warn("IAS: Connectivity issue while fetching profile for {} (timeout/disconnect probable).", data.uuid(), t);
+                    }
+                    throw t;
+                }
+            }
+            CompletableFuture<ProfileResult> profile = CompletableFuture.completedFuture(profileResult);
             //?} else
             /*CompletableFuture<ProfileResult> profile = CompletableFuture.completedFuture(online ? minecraft.getMinecraftSessionService().fetchProfile(data.uuid(), true) : null);*/
             @SuppressWarnings("CastToIncompatibleInterface") // <- Mixin Accessor.
@@ -331,8 +372,17 @@ public final class IASMinecraft {
             /*UserApiService apiService = online ? accessor.ias$authenticationService().createUserApiService(data.token()) : UserApiService.OFFLINE;*/
             UserApiService.UserProperties properties;
             try {
+                long propertiesStart = System.nanoTime();
+                LOGGER.debug("IAS: Fetching user properties for {}...", data.uuid());
                 properties = apiService.fetchProperties();
+                long propertiesMillis = (System.nanoTime() - propertiesStart) / 1_000_000L;
+                LOGGER.debug("IAS: Fetched user properties for {} in {}ms.", data.uuid(), propertiesMillis);
             } catch (Throwable ignored) {
+                if (IUtils.anyInCausalChain(ignored, err -> err instanceof UnresolvedAddressException || err instanceof HttpTimeoutException || err instanceof java.net.ConnectException || err instanceof java.net.NoRouteToHostException || err instanceof SocketException || err instanceof ClosedChannelException)) {
+                    LOGGER.warn("IAS: Connectivity issue while fetching user properties for {} (timeout/disconnect probable). Falling back to offline properties.", data.uuid(), ignored);
+                } else {
+                    LOGGER.debug("IAS: Unable to fetch user properties for {}. Falling back to offline properties.", data.uuid(), ignored);
+                }
                 properties = UserApiService.OFFLINE_PROPERTIES;
             }
             CompletableFuture<UserApiService.UserProperties> propertiesFuture = CompletableFuture.completedFuture(properties);
@@ -357,13 +407,21 @@ public final class IASMinecraft {
                 accessor.ias$reportingContext(reporting);
                 minecraft.updateTitle();
                 LOGGER.info("IAS: Flushed user.");
+                long totalMillis = (System.nanoTime() - start) / 1_000_000L;
+                LOGGER.debug("IAS: Completed account switch worker for {} in {}ms.", data.name(), totalMillis);
             });
-        }, IAS.executor()).exceptionally(t -> {
+        }).orTimeout(ACCOUNT_SWITCH_TIMEOUT_SECONDS, TimeUnit.SECONDS).exceptionally(t -> {
+            Throwable cause = t instanceof CompletionException completion && completion.getCause() != null ? completion.getCause() : t;
+            if (cause instanceof TimeoutException) {
+                LOGGER.error("IAS: Account switch timed out for {} after {}s.", data.name(), ACCOUNT_SWITCH_TIMEOUT_SECONDS, cause);
+                throw new FriendlyException("Account switch timed out.", cause, "ias.error.connect");
+            }
+
             // Log it.
-            LOGGER.error("IAS: Unable to log in: {}.", data, t);
+            LOGGER.error("IAS: Unable to log in: {}.", data, cause);
 
             // Rethrow.
-            throw new RuntimeException("Unable to change account to: " + data, t);
+            throw new RuntimeException("Unable to change account to: " + data, cause);
         });
     }
 }
