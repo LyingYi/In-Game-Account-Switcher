@@ -50,6 +50,7 @@ import java.nio.channels.UnresolvedAddressException;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
 
 /**
  * Encrypted Microsoft account instance.
@@ -290,7 +291,7 @@ public final class MicrosoftAccount implements Account {
 
                 // Continue.
                 return data;
-            }, IAS.executor()).thenApplyAsync(value -> {
+            }, ForkJoinPool.commonPool()).thenApplyAsync(value -> {
                 // Skip if cancelled.
                 if (value == null || handler.cancelled()) return false;
 
@@ -314,7 +315,7 @@ public final class MicrosoftAccount implements Account {
                 } catch (Throwable t) {
                     throw new RuntimeException("Unable to read the tokens.", t);
                 }
-            }, IAS.executor()).thenComposeAsync(value -> {
+            }, ForkJoinPool.commonPool()).thenComposeAsync(value -> {
                 // Skip if cancelled.
                 if (!value || handler.cancelled()) return CompletableFuture.completedFuture(null);
 
@@ -349,7 +350,7 @@ public final class MicrosoftAccount implements Account {
 
                         // Convert MSA to XBL.
                         return MSAuth.msaToXbl(ms.access());
-                    }, IAS.executor()).thenComposeAsync(xbl -> {
+                    }, ForkJoinPool.commonPool()).thenComposeAsync(xbl -> {
                         // Skip if cancelled.
                         if (xbl == null || handler.cancelled()) return CompletableFuture.completedFuture(null);
 
@@ -359,7 +360,7 @@ public final class MicrosoftAccount implements Account {
 
                         // Convert XBL to XSTS.
                         return MSAuth.xblToXsts(xbl.token(), xbl.hash());
-                    }, IAS.executor()).thenComposeAsync(xsts -> {
+                    }, ForkJoinPool.commonPool()).thenComposeAsync(xsts -> {
                         // Skip if cancelled.
                         if (xsts == null || handler.cancelled()) return CompletableFuture.completedFuture(null);
 
@@ -369,7 +370,7 @@ public final class MicrosoftAccount implements Account {
 
                         // Convert XSTS to MCA.
                         return MSAuth.xstsToMca(xsts.token(), xsts.hash());
-                    }, IAS.executor()).thenComposeAsync(token -> {
+                    }, ForkJoinPool.commonPool()).thenComposeAsync(token -> {
                         // Skip if cancelled.
                         if (token == null || handler.cancelled()) return CompletableFuture.completedFuture(null);
 
@@ -382,7 +383,7 @@ public final class MicrosoftAccount implements Account {
 
                         // Convert MCA to MCP.
                         return MSAuth.mcaToMcp(token);
-                    }, IAS.executor()).exceptionallyAsync(t -> {
+                    }, ForkJoinPool.commonPool()).exceptionallyAsync(t -> {
                         t.addSuppressed(original);
 
                         // Probable case - no internet connection, timeout or abrupt disconnect.
@@ -393,13 +394,13 @@ public final class MicrosoftAccount implements Account {
 
                         // Handle error.
                         throw new RuntimeException("Unable to perform MSR auth.", t);
-                    }, IAS.executor()).exceptionallyAsync(t -> {
+                    }, ForkJoinPool.commonPool()).exceptionallyAsync(t -> {
                         // Rethrow. (adding original)
                         t.addSuppressed(original);
                         throw new RuntimeException("Unable to refresh MSR.", t);
-                    }, IAS.executor());
-                }, IAS.executor());
-            }, IAS.executor()).thenAcceptAsync(profile -> {
+                    }, ForkJoinPool.commonPool());
+                }, ForkJoinPool.commonPool());
+            }, ForkJoinPool.commonPool()).thenAcceptAsync(profile -> {
                 // Skip if cancelled.
                 if (profile == null || handler.cancelled()) return;
 
@@ -463,13 +464,13 @@ public final class MicrosoftAccount implements Account {
                 // Create and return the data.
                 LoginData login = new LoginData(this.name, this.uuid, access.get(), true);
                 handler.success(login, saveStorage);
-            }, IAS.executor()).exceptionallyAsync(t -> {
+            }, ForkJoinPool.commonPool()).exceptionallyAsync(t -> {
                 // Handle error.
                 handler.error(new RuntimeException("Unable to login as MS account", t));
 
                 // Return null.
                 return null;
-            }, IAS.executor());
+            }, ForkJoinPool.commonPool());
         } catch (Throwable t) {
             // Handle.
             handler.error(new RuntimeException("Unable to begin MS auth.", t));
