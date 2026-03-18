@@ -177,6 +177,14 @@ public final class MicrosoftAccount implements Account {
     private byte @NotNull [] data;
 
     /**
+     * Cached decrypted session tokens for the current JVM session.
+     * This allows token refreshes without asking for password again after the
+     * user has already authenticated once in this launch.
+     */
+    @Nullable
+    private volatile CachedSession cachedSession;
+
+    /**
      * Creates a new Microsoft account.
      *
      * @param insecure Whether the account is insecurely stored
@@ -255,6 +263,20 @@ public final class MicrosoftAccount implements Account {
             Holder<String> access = new Holder<>();
             Holder<String> refresh = new Holder<>();
             Holder<Boolean> recrypt = new Holder<>(false);
+            CachedSession cached = this.cachedSession;
+
+            // Reuse in-memory tokens when available, similar to auto-reauth's
+            // "store once, refresh later" approach. This avoids repeatedly
+            // asking for password during the same Minecraft session.
+            if (cached != null) {
+                crypt.set(cached.crypt());
+                access.set(cached.access());
+                refresh.set(cached.refresh());
+                recrypt.set(true);
+                LOGGER.info("IAS: Reusing cached Microsoft tokens for {}/{}.", this.uuid, this.name);
+                this.continueLogin(handler, crypt, access, refresh, recrypt);
+                return;
+            }
 
             // Read the crypt.
             CompletableFuture<Crypt> future;
@@ -315,7 +337,36 @@ public final class MicrosoftAccount implements Account {
                 } catch (Throwable t) {
                     throw new RuntimeException("Unable to read the tokens.", t);
                 }
+            }, ForkJoinPool.commonPool()).thenApplyAsync(value -> {
+                // Cache decrypted tokens in-memory for subsequent silent refreshes
+                // and account switches in this JVM session.
+                Crypt cryptValue = crypt.get();
+                String accessValue = access.get();
+                String refreshValue = refresh.get();
+                if (cryptValue != null && accessValue != null && refreshValue != null) {
+                    this.cachedSession = new CachedSession(cryptValue, accessValue, refreshValue);
+                }
+                return value;
             }, ForkJoinPool.commonPool()).thenComposeAsync(value -> {
+                return this.continueLogin(handler, crypt, access, refresh, recrypt);
+            }, ForkJoinPool.commonPool()).exceptionallyAsync(t -> {
+                // Handle error.
+                handler.error(new RuntimeException("Unable to login as MS account", t));
+
+                // Return null.
+                return null;
+            }, ForkJoinPool.commonPool());
+        } catch (Throwable t) {
+            // Handle.
+            handler.error(new RuntimeException("Unable to begin MS auth.", t));
+        }
+    }
+
+    @NotNull
+    private CompletableFuture<Void> continueLogin(@NotNull LoginHandler handler, @NotNull Holder<Crypt> crypt,
+                                                  @NotNull Holder<String> access, @NotNull Holder<String> refresh,
+                                                  @NotNull Holder<Boolean> recrypt) {
+        return CompletableFuture.completedFuture(true).thenComposeAsync(value -> {
                 // Skip if cancelled.
                 if (!value || handler.cancelled()) return CompletableFuture.completedFuture(null);
 
@@ -461,6 +512,15 @@ public final class MicrosoftAccount implements Account {
                 LOGGER.info("IAS: Successful login as {}", profile);
                 handler.stage(FINALIZING);
 
+                // Keep the newest tokens in memory so token-expiry reconnects do not
+                // require going through browser login or password entry again.
+                Crypt cryptValue = crypt.get();
+                String accessValue = access.get();
+                String refreshValue = refresh.get();
+                if (cryptValue != null && accessValue != null && refreshValue != null) {
+                    this.cachedSession = new CachedSession(cryptValue, accessValue, refreshValue);
+                }
+
                 // Create and return the data.
                 LoginData login = new LoginData(this.name, this.uuid, access.get(), true);
                 handler.success(login, saveStorage);
@@ -471,10 +531,9 @@ public final class MicrosoftAccount implements Account {
                 // Return null.
                 return null;
             }, ForkJoinPool.commonPool());
-        } catch (Throwable t) {
-            // Handle.
-            handler.error(new RuntimeException("Unable to begin MS auth.", t));
-        }
+    }
+
+    private record CachedSession(@NotNull Crypt crypt, @NotNull String access, @NotNull String refresh) {
     }
 
     @Contract(value = "null -> false", pure = true)
