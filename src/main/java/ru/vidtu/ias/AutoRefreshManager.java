@@ -18,10 +18,12 @@ import ru.vidtu.ias.account.MicrosoftAccount;
 import ru.vidtu.ias.auth.LoginData;
 import ru.vidtu.ias.auth.handlers.LoginHandler;
 import ru.vidtu.ias.config.IASStorage;
+import ru.vidtu.ias.utils.exceptions.FriendlyException;
 
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -75,6 +77,14 @@ public final class AutoRefreshManager {
         }).whenComplete((ok, error) -> minecraft.execute(() -> {
             try {
                 if (error != null) {
+                    if (isSilentPasswordRequired(error)) {
+                        LOGGER.info("IAS: Silent token refresh requires password UI for account {}. Falling back to manual login.", account.name());
+                        minecraft.getToastManager().addToast(SystemToast.multiline(minecraft, TOKEN_REFRESH,
+                                Component.literal("In-Game Account Switcher"),
+                                Component.literal("Token refresh needs password. Please login manually.")));
+                        return;
+                    }
+
                     LOGGER.error("IAS: Auto token refresh failed.", error);
                     minecraft.getToastManager().addToast(SystemToast.multiline(minecraft, TOKEN_REFRESH,
                             Component.literal("In-Game Account Switcher"),
@@ -122,7 +132,7 @@ public final class AutoRefreshManager {
             @Override
             public @NotNull CompletableFuture<String> password() {
                 CompletableFuture<String> future = new CompletableFuture<>();
-                future.completeExceptionally(new IllegalStateException("No password UI for silent refresh."));
+                future.completeExceptionally(new FriendlyException("No password UI for silent refresh.", "ias.error.password"));
                 return future;
             }
 
@@ -137,6 +147,24 @@ public final class AutoRefreshManager {
             }
         });
         return out;
+    }
+
+    private static boolean isSilentPasswordRequired(@NotNull Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof FriendlyException friendly && "ias.error.password".equals(friendly.key())) {
+                return true;
+            }
+            if (current instanceof IllegalStateException state && "No password UI for silent refresh.".equals(state.getMessage())) {
+                return true;
+            }
+            current = switch (current) {
+                case CompletionException completion when completion.getCause() != null -> completion.getCause();
+                case RuntimeException runtime when runtime.getCause() != null && runtime.getCause() != current -> runtime.getCause();
+                default -> null;
+            };
+        }
+        return false;
     }
 
     private static void reconnectToLastServer(@NotNull Minecraft minecraft, @NotNull Screen parent) {
