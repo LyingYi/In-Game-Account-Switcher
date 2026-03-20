@@ -248,6 +248,24 @@ public final class MicrosoftAccount implements Account {
         return this.uuid;
     }
 
+    /**
+     * Gets whether this account can complete a login without interactive
+     * password input in the current JVM session.
+     *
+     * @return Whether silent login is currently possible
+     */
+    public boolean canLoginSilently() {
+        if (this.cachedSession != null) return true;
+
+        try (ByteArrayInputStream byteIn = new ByteArrayInputStream(this.data);
+             DataInputStream in = new DataInputStream(byteIn)) {
+            return !"ias:password_crypt_v1".equals(in.readUTF());
+        } catch (IOException e) {
+            LOGGER.debug("IAS: Unable to inspect Microsoft account crypt type for {}/{}.", this.uuid, this.name, e);
+            return false;
+        }
+    }
+
     @Override
     public void login(@NotNull LoginHandler handler) {
         try {

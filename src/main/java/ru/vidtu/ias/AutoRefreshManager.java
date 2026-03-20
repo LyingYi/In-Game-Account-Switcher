@@ -117,6 +117,10 @@ public final class AutoRefreshManager {
     }
 
     private static CompletableFuture<LoginResult> loginSilently(@NotNull MicrosoftAccount account) {
+        if (!account.canLoginSilently()) {
+            return CompletableFuture.failedFuture(new FriendlyException("Silent token refresh requires password.", "ias.error.password"));
+        }
+
         CompletableFuture<LoginResult> out = new CompletableFuture<>();
         account.login(new LoginHandler() {
             @Override
@@ -150,11 +154,13 @@ public final class AutoRefreshManager {
     }
 
     private static boolean isSilentPasswordRequired(@NotNull Throwable error) {
+        FriendlyException friendly = FriendlyException.friendlyInChain(error);
+        if (friendly != null && "ias.error.password".equals(friendly.key())) {
+            return true;
+        }
+
         Throwable current = error;
         while (current != null) {
-            if (current instanceof FriendlyException friendly && "ias.error.password".equals(friendly.key())) {
-                return true;
-            }
             if (current instanceof IllegalStateException state && "No password UI for silent refresh.".equals(state.getMessage())) {
                 return true;
             }
