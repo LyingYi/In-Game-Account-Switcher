@@ -2,7 +2,6 @@ package ru.vidtu.ias;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.User;
-import net.minecraft.client.gui.components.toasts.SystemToast;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.multiplayer.ServerData;
@@ -31,7 +30,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class AutoRefreshManager {
     private static final Logger LOGGER = LoggerFactory.getLogger("IAS/AutoRefresh");
-    public static final SystemToast.SystemToastId TOKEN_REFRESH = new SystemToast.SystemToastId(10001L);
 
     private static final AtomicBoolean REFRESHING = new AtomicBoolean(false);
 
@@ -47,25 +45,22 @@ public final class AutoRefreshManager {
         lastServerName = serverData != null ? serverData.name : address.toString();
     }
 
-    public static void tryRefreshExpiredToken(@NotNull Minecraft minecraft, @NotNull Screen parent, @NotNull Component reason) {
-        if (!isTokenExpiredMessage(reason) || !REFRESHING.compareAndSet(false, true)) return;
+    public static boolean tryRefreshExpiredToken(@NotNull Minecraft minecraft, @NotNull Screen parent, @NotNull Component reason) {
+        if (!isTokenExpiredMessage(reason) || !REFRESHING.compareAndSet(false, true)) return false;
 
         MicrosoftAccount account = currentMicrosoftAccount(minecraft.getUser());
         if (account == null) {
             REFRESHING.set(false);
-            return;
+            return false;
         }
 
         String address = lastServerAddress;
         if (address == null || address.isBlank()) {
             REFRESHING.set(false);
-            return;
+            return false;
         }
 
         LOGGER.info("IAS: Token-expiry disconnect detected, trying silent token refresh for {}.", account.name());
-        minecraft.getToastManager().addToast(SystemToast.multiline(minecraft, TOKEN_REFRESH,
-                Component.literal("In-Game Account Switcher"),
-                Component.literal("Refreshing Microsoft token...")));
 
         loginSilently(account).thenCompose(result -> {
             if (result.changed) {
@@ -79,27 +74,20 @@ public final class AutoRefreshManager {
                 if (error != null) {
                     if (isSilentPasswordRequired(error)) {
                         LOGGER.info("IAS: Silent token refresh requires password UI for account {}. Falling back to manual login.", account.name());
-                        minecraft.getToastManager().addToast(SystemToast.multiline(minecraft, TOKEN_REFRESH,
-                                Component.literal("In-Game Account Switcher"),
-                                Component.literal("Token refresh needs password. Please login manually.")));
                         return;
                     }
 
                     LOGGER.error("IAS: Auto token refresh failed.", error);
-                    minecraft.getToastManager().addToast(SystemToast.multiline(minecraft, TOKEN_REFRESH,
-                            Component.literal("In-Game Account Switcher"),
-                            Component.literal("Token refresh failed.")));
                     return;
                 }
 
-                minecraft.getToastManager().addToast(SystemToast.multiline(minecraft, TOKEN_REFRESH,
-                        Component.literal("In-Game Account Switcher"),
-                        Component.literal("Token refreshed. Reconnecting...")));
+                LOGGER.info("IAS: Token refresh succeeded. Reconnecting to previous server...");
                 reconnectToLastServer(minecraft, parent);
             } finally {
                 REFRESHING.set(false);
             }
         }));
+        return true;
     }
 
     private static @Nullable MicrosoftAccount currentMicrosoftAccount(@Nullable User user) {
@@ -161,13 +149,12 @@ public final class AutoRefreshManager {
 
         Throwable current = error;
         while (current != null) {
-            final Throwable cur = current;
             if (current instanceof IllegalStateException state && "No password UI for silent refresh.".equals(state.getMessage())) {
                 return true;
             }
             current = switch (current) {
                 case CompletionException completion when completion.getCause() != null -> completion.getCause();
-                case RuntimeException runtime when runtime.getCause() != null && runtime.getCause() != cur -> runtime.getCause();
+                case RuntimeException runtime when runtime.getCause() != null && runtime.getCause() != current -> runtime.getCause();
                 default -> null;
             };
         }

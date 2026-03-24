@@ -130,5 +130,6 @@
   "ias.help.errors": "Common Authentication Errors",
   "ias.help.stolen": "How to combat account stealing?",
   "modmenu.descriptionTranslation.ias": "Allows you to change which account you are signed in to in-game without restarting Minecraft.",
-  "modmenu.summaryTranslation.ias": "Allows you to change your account in-game."
+  "modmenu.summaryTranslation.ias": "Allows you to change your account in-game.",
+  "ias.autoRefresh.waiting": "Refreshing token, please wait..."
 }
