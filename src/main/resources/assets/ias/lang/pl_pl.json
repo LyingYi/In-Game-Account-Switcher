@@ -130,5 +130,6 @@
   "ias.help.errors": "Typowe błędy uwierzytelniania (Strona jest tylko w języku angielskim)",
   "ias.help.stolen": "Jak chronić konto przed kradzieżą? (Strona jest tylko w języku angielskim)",
   "modmenu.descriptionTranslation.ias": "Pozwala zmienić konto, na które jesteś zalogowany w grze, bez konieczności restartowania Minecrafta.",
-  "modmenu.summaryTranslation.ias": "Pozwala zmienić konto w grze."
+  "modmenu.summaryTranslation.ias": "Pozwala zmienić konto w grze.",
+  "ias.autoRefresh.waiting": "Odświeżanie tokena, proszę czekać..."
 }

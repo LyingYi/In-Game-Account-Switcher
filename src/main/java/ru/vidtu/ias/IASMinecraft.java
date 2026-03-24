@@ -145,7 +145,16 @@ public final class IASMinecraft {
         if (screen instanceof DisconnectedScreen disconnected) {
             try {
                 DisconnectedScreenAccessor accessor = (DisconnectedScreenAccessor) disconnected;
-                AutoRefreshManager.tryRefreshExpiredToken(minecraft, accessor.ias$parent(), accessor.ias$details().reason());
+                boolean refreshing = AutoRefreshManager.tryRefreshExpiredToken(minecraft, accessor.ias$parent(), accessor.ias$details().reason());
+                if (refreshing) {
+                    int x = screen.width / 2 - 100;
+                    int y = Math.min(screen.height / 2 + 9, screen.height - 30) + 24;
+                    Button indicator = Button.builder(Component.translatable("ias.autoRefresh.waiting"), btn -> {
+                        // no-op, this button is intentionally disabled.
+                    }).bounds(x, y, 200, 20).build();
+                    indicator.active = false;
+                    buttonAdder.accept(indicator);
+                }
             } catch (Throwable t) {
                 LOGGER.debug("IAS: Unable to inspect disconnect reason for auto-refresh.", t);
             }
