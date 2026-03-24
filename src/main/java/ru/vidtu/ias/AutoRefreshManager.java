@@ -110,7 +110,7 @@ public final class AutoRefreshManager {
         }
 
         CompletableFuture<LoginResult> out = new CompletableFuture<>();
-        account.login(new LoginHandler() {
+        account.loginSilently(new LoginHandler() {
             @Override
             public boolean cancelled() {
                 return false;

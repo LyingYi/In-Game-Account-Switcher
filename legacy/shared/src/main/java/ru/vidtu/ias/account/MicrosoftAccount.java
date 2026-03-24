@@ -268,6 +268,20 @@ public final class MicrosoftAccount implements Account {
 
     @Override
     public void login(@NotNull LoginHandler handler) {
+        this.login(handler, false);
+    }
+
+    /**
+     * Logs in using silent mode where in-memory cached tokens can be reused.
+     * This should only be used by non-interactive auto-refresh flows.
+     *
+     * @param handler Target login handler
+     */
+    public void loginSilently(@NotNull LoginHandler handler) {
+        this.login(handler, true);
+    }
+
+    private void login(@NotNull LoginHandler handler, boolean allowCachedSession) {
         try {
             // Skip if cancelled.
             if (handler.cancelled()) return;
@@ -286,7 +300,7 @@ public final class MicrosoftAccount implements Account {
             // Reuse in-memory tokens when available, similar to auto-reauth's
             // "store once, refresh later" approach. This avoids repeatedly
             // asking for password during the same Minecraft session.
-            if (cached != null) {
+            if (allowCachedSession && cached != null) {
                 crypt.set(cached.crypt());
                 access.set(cached.access());
                 refresh.set(cached.refresh());
