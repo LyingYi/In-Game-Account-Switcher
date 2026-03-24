@@ -23,7 +23,6 @@ import com.google.errorprone.annotations.CheckReturnValue;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
-import ru.vidtu.ias.IAS;
 import ru.vidtu.ias.utils.exceptions.FriendlyException;
 
 import javax.crypto.AEADBadTagException;
@@ -36,6 +35,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.io.DataInput;
 import java.security.spec.KeySpec;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
 import java.util.function.Supplier;
 
 /**
@@ -109,7 +109,7 @@ public sealed interface Crypt permits DummyCrypt, HardwareCrypt, PasswordCrypt {
                 case "ias:dummy_crypt_v1" -> CompletableFuture.completedFuture(DummyCrypt.INSTANCE);
                 case "ias:hardware_crypt_v1" -> CompletableFuture.completedFuture(HardwareCrypt.INSTANCE_V1);
                 case "ias:hardware_crypt_v2" -> CompletableFuture.completedFuture(HardwareCrypt.INSTANCE_V2);
-                case "ias:password_crypt_v1" -> password.get().thenApplyAsync(pass -> pass == null ? null : new PasswordCrypt(pass), IAS.executor());
+                case "ias:password_crypt_v1" -> password.get().thenApplyAsync(pass -> pass == null ? null : new PasswordCrypt(pass), ForkJoinPool.commonPool());
                 default -> CompletableFuture.failedFuture(new IllegalArgumentException("Unknown crypt type: " + type));
             };
         } catch (Throwable t) {
