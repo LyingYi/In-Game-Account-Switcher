@@ -50,6 +50,7 @@ import java.nio.channels.UnresolvedAddressException;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
 
 /**
  * Encrypted Microsoft account instance.
@@ -176,6 +177,14 @@ public final class MicrosoftAccount implements Account {
     private byte @NotNull [] data;
 
     /**
+     * Cached decrypted session tokens for the current JVM session.
+     * This allows token refreshes without asking for password again after the
+     * user has already authenticated once in this launch.
+     */
+    @Nullable
+    private volatile CachedSession cachedSession;
+
+    /**
      * Creates a new Microsoft account.
      *
      * @param insecure Whether the account is insecurely stored
@@ -239,6 +248,24 @@ public final class MicrosoftAccount implements Account {
         return this.uuid;
     }
 
+    /**
+     * Gets whether this account can complete a login without interactive
+     * password input in the current JVM session.
+     *
+     * @return Whether silent login is currently possible
+     */
+    public boolean canLoginSilently() {
+        if (this.cachedSession != null) return true;
+
+        try (ByteArrayInputStream byteIn = new ByteArrayInputStream(this.data);
+             DataInputStream in = new DataInputStream(byteIn)) {
+            return !"ias:password_crypt_v1".equals(in.readUTF());
+        } catch (IOException e) {
+            LOGGER.debug("IAS: Unable to inspect Microsoft account crypt type for {}/{}.", this.uuid, this.name, e);
+            return false;
+        }
+    }
+
     @Override
     public void login(@NotNull LoginHandler handler) {
         try {
@@ -254,6 +281,20 @@ public final class MicrosoftAccount implements Account {
             Holder<String> access = new Holder<>();
             Holder<String> refresh = new Holder<>();
             Holder<Boolean> recrypt = new Holder<>(false);
+            CachedSession cached = this.cachedSession;
+
+            // Reuse in-memory tokens when available, similar to auto-reauth's
+            // "store once, refresh later" approach. This avoids repeatedly
+            // asking for password during the same Minecraft session.
+            if (cached != null) {
+                crypt.set(cached.crypt());
+                access.set(cached.access());
+                refresh.set(cached.refresh());
+                recrypt.set(true);
+                LOGGER.info("IAS: Reusing cached Microsoft tokens for {}/{}.", this.uuid, this.name);
+                this.continueLogin(handler, crypt, access, refresh, recrypt);
+                return;
+            }
 
             // Read the crypt.
             CompletableFuture<Crypt> future;
@@ -290,7 +331,7 @@ public final class MicrosoftAccount implements Account {
 
                 // Continue.
                 return data;
-            }, IAS.executor()).thenApplyAsync(value -> {
+            }, ForkJoinPool.commonPool()).thenApplyAsync(value -> {
                 // Skip if cancelled.
                 if (value == null || handler.cancelled()) return false;
 
@@ -314,7 +355,36 @@ public final class MicrosoftAccount implements Account {
                 } catch (Throwable t) {
                     throw new RuntimeException("Unable to read the tokens.", t);
                 }
-            }, IAS.executor()).thenComposeAsync(value -> {
+            }, ForkJoinPool.commonPool()).thenApplyAsync(value -> {
+                // Cache decrypted tokens in-memory for subsequent silent refreshes
+                // and account switches in this JVM session.
+                Crypt cryptValue = crypt.get();
+                String accessValue = access.get();
+                String refreshValue = refresh.get();
+                if (cryptValue != null && accessValue != null && refreshValue != null) {
+                    this.cachedSession = new CachedSession(cryptValue, accessValue, refreshValue);
+                }
+                return value;
+            }, ForkJoinPool.commonPool()).thenComposeAsync(value -> {
+                return this.continueLogin(handler, crypt, access, refresh, recrypt);
+            }, ForkJoinPool.commonPool()).exceptionallyAsync(t -> {
+                // Handle error.
+                handler.error(new RuntimeException("Unable to login as MS account", t));
+
+                // Return null.
+                return null;
+            }, ForkJoinPool.commonPool());
+        } catch (Throwable t) {
+            // Handle.
+            handler.error(new RuntimeException("Unable to begin MS auth.", t));
+        }
+    }
+
+    @NotNull
+    private CompletableFuture<Void> continueLogin(@NotNull LoginHandler handler, @NotNull Holder<Crypt> crypt,
+                                                  @NotNull Holder<String> access, @NotNull Holder<String> refresh,
+                                                  @NotNull Holder<Boolean> recrypt) {
+        return CompletableFuture.completedFuture(true).thenComposeAsync(value -> {
                 // Skip if cancelled.
                 if (!value || handler.cancelled()) return CompletableFuture.completedFuture(null);
 
@@ -349,7 +419,7 @@ public final class MicrosoftAccount implements Account {
 
                         // Convert MSA to XBL.
                         return MSAuth.msaToXbl(ms.access());
-                    }, IAS.executor()).thenComposeAsync(xbl -> {
+                    }, ForkJoinPool.commonPool()).thenComposeAsync(xbl -> {
                         // Skip if cancelled.
                         if (xbl == null || handler.cancelled()) return CompletableFuture.completedFuture(null);
 
@@ -359,7 +429,7 @@ public final class MicrosoftAccount implements Account {
 
                         // Convert XBL to XSTS.
                         return MSAuth.xblToXsts(xbl.token(), xbl.hash());
-                    }, IAS.executor()).thenComposeAsync(xsts -> {
+                    }, ForkJoinPool.commonPool()).thenComposeAsync(xsts -> {
                         // Skip if cancelled.
                         if (xsts == null || handler.cancelled()) return CompletableFuture.completedFuture(null);
 
@@ -369,7 +439,7 @@ public final class MicrosoftAccount implements Account {
 
                         // Convert XSTS to MCA.
                         return MSAuth.xstsToMca(xsts.token(), xsts.hash());
-                    }, IAS.executor()).thenComposeAsync(token -> {
+                    }, ForkJoinPool.commonPool()).thenComposeAsync(token -> {
                         // Skip if cancelled.
                         if (token == null || handler.cancelled()) return CompletableFuture.completedFuture(null);
 
@@ -382,7 +452,7 @@ public final class MicrosoftAccount implements Account {
 
                         // Convert MCA to MCP.
                         return MSAuth.mcaToMcp(token);
-                    }, IAS.executor()).exceptionallyAsync(t -> {
+                    }, ForkJoinPool.commonPool()).exceptionallyAsync(t -> {
                         t.addSuppressed(original);
 
                         // Probable case - no internet connection, timeout or abrupt disconnect.
@@ -393,13 +463,13 @@ public final class MicrosoftAccount implements Account {
 
                         // Handle error.
                         throw new RuntimeException("Unable to perform MSR auth.", t);
-                    }, IAS.executor()).exceptionallyAsync(t -> {
+                    }, ForkJoinPool.commonPool()).exceptionallyAsync(t -> {
                         // Rethrow. (adding original)
                         t.addSuppressed(original);
                         throw new RuntimeException("Unable to refresh MSR.", t);
-                    }, IAS.executor());
-                }, IAS.executor());
-            }, IAS.executor()).thenAcceptAsync(profile -> {
+                    }, ForkJoinPool.commonPool());
+                }, ForkJoinPool.commonPool());
+            }, ForkJoinPool.commonPool()).thenAcceptAsync(profile -> {
                 // Skip if cancelled.
                 if (profile == null || handler.cancelled()) return;
 
@@ -460,20 +530,28 @@ public final class MicrosoftAccount implements Account {
                 LOGGER.info("IAS: Successful login as {}", profile);
                 handler.stage(FINALIZING);
 
+                // Keep the newest tokens in memory so token-expiry reconnects do not
+                // require going through browser login or password entry again.
+                Crypt cryptValue = crypt.get();
+                String accessValue = access.get();
+                String refreshValue = refresh.get();
+                if (cryptValue != null && accessValue != null && refreshValue != null) {
+                    this.cachedSession = new CachedSession(cryptValue, accessValue, refreshValue);
+                }
+
                 // Create and return the data.
                 LoginData login = new LoginData(this.name, this.uuid, access.get(), true);
                 handler.success(login, saveStorage);
-            }, IAS.executor()).exceptionallyAsync(t -> {
+            }, ForkJoinPool.commonPool()).exceptionallyAsync(t -> {
                 // Handle error.
                 handler.error(new RuntimeException("Unable to login as MS account", t));
 
                 // Return null.
                 return null;
-            }, IAS.executor());
-        } catch (Throwable t) {
-            // Handle.
-            handler.error(new RuntimeException("Unable to begin MS auth.", t));
-        }
+            }, ForkJoinPool.commonPool());
+    }
+
+    private record CachedSession(@NotNull Crypt crypt, @NotNull String access, @NotNull String refresh) {
     }
 
     @Contract(value = "null -> false", pure = true)
