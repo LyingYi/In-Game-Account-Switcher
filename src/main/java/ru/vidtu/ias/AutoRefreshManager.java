@@ -152,11 +152,15 @@ public final class AutoRefreshManager {
             if (current instanceof IllegalStateException state && "No password UI for silent refresh.".equals(state.getMessage())) {
                 return true;
             }
-            current = switch (current) {
-                case CompletionException completion when completion.getCause() != null -> completion.getCause();
-                case RuntimeException runtime when runtime.getCause() != null && runtime.getCause() != current -> runtime.getCause();
-                default -> null;
-            };
+            if (current instanceof CompletionException completion && completion.getCause() != null) {
+                current = completion.getCause();
+                continue;
+            }
+            if (current instanceof RuntimeException runtime && runtime.getCause() != null && runtime.getCause() != current) {
+                current = runtime.getCause();
+                continue;
+            }
+            current = null;
         }
         return false;
     }
