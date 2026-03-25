@@ -2,7 +2,6 @@ package ru.vidtu.ias;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.User;
-import net.minecraft.client.gui.components.toasts.SystemToast;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.multiplayer.ServerData;
@@ -18,10 +17,12 @@ import ru.vidtu.ias.account.MicrosoftAccount;
 import ru.vidtu.ias.auth.LoginData;
 import ru.vidtu.ias.auth.handlers.LoginHandler;
 import ru.vidtu.ias.config.IASStorage;
+import ru.vidtu.ias.utils.exceptions.FriendlyException;
 
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -29,7 +30,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class AutoRefreshManager {
     private static final Logger LOGGER = LoggerFactory.getLogger("IAS/AutoRefresh");
-    public static final SystemToast.SystemToastId TOKEN_REFRESH = new SystemToast.SystemToastId(10001L);
 
     private static final AtomicBoolean REFRESHING = new AtomicBoolean(false);
 
@@ -45,25 +45,22 @@ public final class AutoRefreshManager {
         lastServerName = serverData != null ? serverData.name : address.toString();
     }
 
-    public static void tryRefreshExpiredToken(@NotNull Minecraft minecraft, @NotNull Screen parent, @NotNull Component reason) {
-        if (!isTokenExpiredMessage(reason) || !REFRESHING.compareAndSet(false, true)) return;
+    public static boolean tryRefreshExpiredToken(@NotNull Minecraft minecraft, @NotNull Screen disconnectedScreen, @NotNull Screen parent, @NotNull Component reason) {
+        if (!isTokenExpiredMessage(reason) || !REFRESHING.compareAndSet(false, true)) return false;
 
         MicrosoftAccount account = currentMicrosoftAccount(minecraft.getUser());
         if (account == null) {
             REFRESHING.set(false);
-            return;
+            return false;
         }
 
         String address = lastServerAddress;
         if (address == null || address.isBlank()) {
             REFRESHING.set(false);
-            return;
+            return false;
         }
 
         LOGGER.info("IAS: Token-expiry disconnect detected, trying silent token refresh for {}.", account.name());
-        minecraft.getToastManager().addToast(SystemToast.multiline(minecraft, TOKEN_REFRESH,
-                Component.literal("In-Game Account Switcher"),
-                Component.literal("Refreshing Microsoft token...")));
 
         loginSilently(account).thenCompose(result -> {
             if (result.changed) {
@@ -75,21 +72,27 @@ public final class AutoRefreshManager {
         }).whenComplete((ok, error) -> minecraft.execute(() -> {
             try {
                 if (error != null) {
+                    if (isSilentPasswordRequired(error)) {
+                        LOGGER.info("IAS: Silent token refresh requires password UI for account {}. Falling back to manual login.", account.name());
+                        return;
+                    }
+
                     LOGGER.error("IAS: Auto token refresh failed.", error);
-                    minecraft.getToastManager().addToast(SystemToast.multiline(minecraft, TOKEN_REFRESH,
-                            Component.literal("In-Game Account Switcher"),
-                            Component.literal("Token refresh failed.")));
                     return;
                 }
 
-                minecraft.getToastManager().addToast(SystemToast.multiline(minecraft, TOKEN_REFRESH,
-                        Component.literal("In-Game Account Switcher"),
-                        Component.literal("Token refreshed. Reconnecting...")));
+                if (minecraft.screen != disconnectedScreen) {
+                    LOGGER.info("IAS: Token refresh succeeded, but user has already left disconnected screen. Skipping auto-reconnect.");
+                    return;
+                }
+
+                LOGGER.info("IAS: Token refresh succeeded. Reconnecting to previous server...");
                 reconnectToLastServer(minecraft, parent);
             } finally {
                 REFRESHING.set(false);
             }
         }));
+        return true;
     }
 
     private static @Nullable MicrosoftAccount currentMicrosoftAccount(@Nullable User user) {
@@ -107,8 +110,12 @@ public final class AutoRefreshManager {
     }
 
     private static CompletableFuture<LoginResult> loginSilently(@NotNull MicrosoftAccount account) {
+        if (!account.canLoginSilently()) {
+            return CompletableFuture.failedFuture(new FriendlyException("Silent token refresh requires password.", "ias.error.password"));
+        }
+
         CompletableFuture<LoginResult> out = new CompletableFuture<>();
-        account.login(new LoginHandler() {
+        account.loginSilently(new LoginHandler() {
             @Override
             public boolean cancelled() {
                 return false;
@@ -122,7 +129,7 @@ public final class AutoRefreshManager {
             @Override
             public @NotNull CompletableFuture<String> password() {
                 CompletableFuture<String> future = new CompletableFuture<>();
-                future.completeExceptionally(new IllegalStateException("No password UI for silent refresh."));
+                future.completeExceptionally(new FriendlyException("No password UI for silent refresh.", "ias.error.password"));
                 return future;
             }
 
@@ -137,6 +144,30 @@ public final class AutoRefreshManager {
             }
         });
         return out;
+    }
+
+    private static boolean isSilentPasswordRequired(@NotNull Throwable error) {
+        FriendlyException friendly = FriendlyException.friendlyInChain(error);
+        if (friendly != null && "ias.error.password".equals(friendly.key())) {
+            return true;
+        }
+
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof IllegalStateException state && "No password UI for silent refresh.".equals(state.getMessage())) {
+                return true;
+            }
+            if (current instanceof CompletionException completion && completion.getCause() != null) {
+                current = completion.getCause();
+                continue;
+            }
+            if (current instanceof RuntimeException runtime && runtime.getCause() != null && runtime.getCause() != current) {
+                current = runtime.getCause();
+                continue;
+            }
+            current = null;
+        }
+        return false;
     }
 
     private static void reconnectToLastServer(@NotNull Minecraft minecraft, @NotNull Screen parent) {

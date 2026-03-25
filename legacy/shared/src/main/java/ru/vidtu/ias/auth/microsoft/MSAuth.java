@@ -43,6 +43,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
 
 /**
  * Class for Microsoft authentication system.
@@ -59,7 +60,7 @@ public final class MSAuth {
             .connectTimeout(IAS.TIMEOUT)
             .version(HttpClient.Version.HTTP_2)
             .followRedirects(HttpClient.Redirect.NEVER)
-            .executor(IAS.executor())
+            .executor(ForkJoinPool.commonPool())
             .build();
 
     /**
@@ -122,7 +123,7 @@ public final class MSAuth {
                 String message = "Unable to request Device Auth Code (DAC) from (" + response + " with " + response.headers() + "): " + response.body();
                 throw new RuntimeException(message, t);
             }
-        }, IAS.executor());
+        }, ForkJoinPool.commonPool());
     }
 
     /**
@@ -245,7 +246,7 @@ public final class MSAuth {
                 message = message.replace(code, "[MSAC]");
                 throw new RuntimeException(message, t);
             }
-        }, IAS.executor());
+        }, ForkJoinPool.commonPool());
     }
 
     /**
@@ -291,7 +292,7 @@ public final class MSAuth {
                 message = message.replace(refresh, "[MSR]");
                 throw new RuntimeException(message, t);
             }
-        }, IAS.executor());
+        }, ForkJoinPool.commonPool());
     }
 
     /**
@@ -350,7 +351,7 @@ public final class MSAuth {
                 message = message.replace(authToken, "[MSA]");
                 throw new RuntimeException(message, t);
             }
-        }, IAS.executor());
+        }, ForkJoinPool.commonPool());
     }
 
     /**
@@ -441,7 +442,7 @@ public final class MSAuth {
                 }
                 throw new RuntimeException(message, t);
             }
-        }, IAS.executor());
+        }, ForkJoinPool.commonPool());
     }
 
     /**
@@ -489,7 +490,7 @@ public final class MSAuth {
                 message = message.replace(hash, "[HASH]");
                 throw new RuntimeException(message, t);
             }
-        }, IAS.executor());
+        }, ForkJoinPool.commonPool());
     }
 
     /**
@@ -535,7 +536,7 @@ public final class MSAuth {
                 message = message.replace(access, "[MCA]");
                 throw new RuntimeException(message, t);
             }
-        }, IAS.executor());
+        }, ForkJoinPool.commonPool());
     }
 
     /**
@@ -569,6 +570,6 @@ public final class MSAuth {
                 // Rethrow.
                 throw new RuntimeException("Unable to obtain Minecraft profile by name '" + name + "' (" + response + " with " + response.headers() + "): " + response.body(), t);
             }
-        }, IAS.executor());
+        }, ForkJoinPool.commonPool());
     }
 }
