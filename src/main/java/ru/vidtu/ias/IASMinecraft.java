@@ -145,10 +145,15 @@ public final class IASMinecraft {
         if (screen instanceof DisconnectedScreen disconnected) {
             try {
                 DisconnectedScreenAccessor accessor = (DisconnectedScreenAccessor) disconnected;
-                boolean refreshing = AutoRefreshManager.tryRefreshExpiredToken(minecraft, accessor.ias$parent(), accessor.ias$details().reason());
+                boolean refreshing = AutoRefreshManager.tryRefreshExpiredToken(minecraft, screen, accessor.ias$parent(), accessor.ias$details().reason());
                 if (refreshing) {
                     int x = screen.width / 2 - 100;
-                    int y = Math.min(screen.height / 2 + 9, screen.height - 30) + 24;
+                    int y = Math.min(screen.height / 2 + 9, screen.height - 30) + 28;
+                    for (GuiEventListener child : screen.children()) {
+                        if (!(child instanceof LayoutElement le)) continue;
+                        if (le.getWidth() != 200 || Math.abs(le.getX() - x) > 2) continue;
+                        y = Math.max(y, le.getY() + le.getHeight() + 4);
+                    }
                     Button indicator = Button.builder(Component.translatable("ias.autoRefresh.waiting"), btn -> {
                         // no-op, this button is intentionally disabled.
                     }).bounds(x, y, 200, 20).build();

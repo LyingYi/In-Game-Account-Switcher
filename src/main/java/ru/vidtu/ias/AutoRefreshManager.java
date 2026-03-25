@@ -45,7 +45,7 @@ public final class AutoRefreshManager {
         lastServerName = serverData != null ? serverData.name : address.toString();
     }
 
-    public static boolean tryRefreshExpiredToken(@NotNull Minecraft minecraft, @NotNull Screen parent, @NotNull Component reason) {
+    public static boolean tryRefreshExpiredToken(@NotNull Minecraft minecraft, @NotNull Screen disconnectedScreen, @NotNull Screen parent, @NotNull Component reason) {
         if (!isTokenExpiredMessage(reason) || !REFRESHING.compareAndSet(false, true)) return false;
 
         MicrosoftAccount account = currentMicrosoftAccount(minecraft.getUser());
@@ -78,6 +78,11 @@ public final class AutoRefreshManager {
                     }
 
                     LOGGER.error("IAS: Auto token refresh failed.", error);
+                    return;
+                }
+
+                if (minecraft.screen != disconnectedScreen) {
+                    LOGGER.info("IAS: Token refresh succeeded, but user has already left disconnected screen. Skipping auto-reconnect.");
                     return;
                 }
 
