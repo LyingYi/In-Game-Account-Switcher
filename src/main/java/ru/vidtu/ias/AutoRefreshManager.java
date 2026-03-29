@@ -95,6 +95,17 @@ public final class AutoRefreshManager {
         return true;
     }
 
+    /**
+     * Gets whether the UI should show the token-refreshing indicator for the
+     * given disconnect reason.
+     *
+     * @param reason Disconnect reason
+     * @return Whether the refresh indicator should be shown
+     */
+    public static boolean shouldShowRefreshingIndicator(@NotNull Component reason) {
+        return REFRESHING.get() && isTokenExpiredMessage(reason);
+    }
+
     private static @Nullable MicrosoftAccount currentMicrosoftAccount(@Nullable User user) {
         if (user == null) return null;
         for (Account account : IASStorage.ACCOUNTS) {
